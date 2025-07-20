@@ -1,98 +1,82 @@
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 import os
+import requests
+import re
 import asyncio
-import yt_dlp
 
 API_ID = 15647296
 API_HASH = "0cb3f4a573026b56ea80e1c8f039ad6a"
 BOT_TOKEN = "8144738030:AAHDWFS8B68PBdbp7ljukTriy-QlA414tV4"
 
-bot = Client("media_downloader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client("gdrive_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-active_downloads = {}
+# Function to extract file id from Google Drive link
+def extract_gdrive_id(url):
+    patterns = [
+        r"https?://drive\.google\.com/file/d/([^/]+)/?.*",
+        r"https?://drive\.google\.com/open\?id=([^&]+)",
+        r"https?://drive\.google\.com/uc\?id=([^&]+)&?.*"
+    ]
+    for pattern in patterns:
+        m = re.match(pattern, url)
+        if m:
+            return m.group(1)
+    return None
 
-# Download progress hook
-def progress_hook(d):
-    message = active_downloads.get(d.get("info_dict", {}).get("id"))
-    if message and d["status"] == "downloading":
-        percent = d.get("_percent_str", "").strip()
-        total = d.get("_total_bytes_str", "").strip()
-        downloaded = d.get("_downloaded_bytes_str", "").strip()
-        text = f"📥 Downloading: `{percent}`\n💾 Downloaded: `{downloaded} / {total}`"
-        asyncio.create_task(message.edit_text(text))
+async def download_file(file_id, filename, message):
+    URL = f"https://drive.google.com/uc?export=download&id={file_id}"
 
-# Format selection
-def build_format_keyboard(formats):
-    buttons = []
-    for fmt in formats:
-        label = f"{fmt['format_note']} - {fmt['ext']} - {fmt['filesize'] // 1024 // 1024 if fmt.get('filesize') else '?'}MB"
-        buttons.append([InlineKeyboardButton(label, callback_data=fmt['format_id'])])
-    return InlineKeyboardMarkup(buttons)
+    session = requests.Session()
 
-# Start
-@bot.on_message(filters.private & filters.command("start"))
-async def start_handler(client, message):
-    await message.reply("👋 Send me a YouTube / Google Drive / Dailymotion link to download.")
+    response = session.get(URL, stream=True)
+    token = None
 
-# URL Handler
-@bot.on_message(filters.private & filters.text)
-async def url_handler(client, message: Message):
+    # Get confirmation token for large files
+    for key, value in response.cookies.items():
+        if key.startswith('download_warning'):
+            token = value
+            break
+
+    if token:
+        params = {'id': file_id, 'confirm': token}
+        response = session.get(URL, params=params, stream=True)
+
+    total_size = int(response.headers.get('content-length', 0))
+    chunk_size = 1024 * 1024  # 1MB
+
+    downloaded = 0
+    with open(filename, "wb") as f:
+        async for chunk in async_requests(response, chunk_size):
+            if chunk:
+                f.write(chunk)
+                downloaded += len(chunk)
+                percent = downloaded * 100 / total_size if total_size else 0
+                await message.edit(f"📥 Downloading: {percent:.2f}%\n{downloaded // (1024*1024)}MB / {total_size // (1024*1024)}MB")
+
+async def async_requests(response, chunk_size):
+    loop = asyncio.get_event_loop()
+    for chunk in response.iter_content(chunk_size):
+        yield await loop.run_in_executor(None, lambda: chunk)
+
+@app.on_message(filters.private & filters.text)
+async def handle_private(client, message):
     url = message.text.strip()
-    if not any(site in url for site in ["youtube.com", "youtu.be", "drive.google.com", "dailymotion.com"]):
-        return await message.reply("❌ Unsupported URL")
+    file_id = extract_gdrive_id(url)
+    if not file_id:
+        await message.reply("❌ මෙය Google Drive link එකක් නොවේ. කරුණාකර Google Drive link එකක් පමණක් එවන්න.")
+        return
 
-    temp_msg = await message.reply("🔎 Fetching video info...")
+    await_message = await message.reply("🔄 Google Drive link එක සැකසෙමින් ඇත...")
 
-    ydl_opts = {
-        'quiet': True,
-        'skip_download': True,
-        'forcejson': True,
-    }
+    filename = f"{file_id}.file"
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        await download_file(file_id, filename, await_message)
+        await await_message.edit(f"✅ Download සම්පූර්ණයි!\nගොනුව: `{filename}`")
+        # File saved locally - Runway / cloud environment ඉන් පසුව clean-up හොයාගන්න ඕන.
+        os.remove(filename)
     except Exception as e:
-        return await temp_msg.edit(f"⚠️ Error: {e}")
+        await await_message.edit(f"❌ දෝෂයක් සිදු විය: {e}")
 
-    video_id = info.get("id")
-    formats = [f for f in info.get("formats", []) if f.get("filesize")]
-    formats = sorted(formats, key=lambda x: x["filesize"] if x.get("filesize") else 0, reverse=True)[:10]
+app.run()
 
-    if not formats:
-        return await temp_msg.edit("❌ No downloadable formats found.")
-
-    active_downloads[video_id] = temp_msg
-    await temp_msg.edit("🔻 Select a format to download:", reply_markup=build_format_keyboard(formats))
-
-    # Store info for callback use
-    temp_msg.video_info = info
-
-# Format button callback
-@bot.on_callback_query()
-async def format_button(client, callback_query):
-    format_id = callback_query.data
-    message = callback_query.message
-    info = getattr(message, 'video_info', None)
-    if not info:
-        return await callback_query.answer("❌ Video info missing", show_alert=True)
-
-    await message.edit_text("⏬ Starting download...")
-
-    ydl_opts = {
-        'format': format_id,
-        'outtmpl': f"{info['id']}.%(ext)s",
-        'progress_hooks': [progress_hook],
-        'noplaylist': True
-    }
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            result = ydl.download([info['webpage_url']])
-    except Exception as e:
-        return await message.edit_text(f"❌ Download failed: {e}")
-
-    await message.edit_text("✅ Download complete (not uploaded or saved as per settings).")
-
-bot.run()

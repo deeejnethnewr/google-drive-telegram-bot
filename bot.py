@@ -6,7 +6,7 @@ import yt_dlp
 
 API_ID = 15647296
 API_HASH = "0cb3f4a573026b56ea80e1c8f039ad6a"
-BOT_TOKEN = "7957029233:AAF8rZln5PZ8OayNufB38CDi18sOFuw_EKQ"
+BOT_TOKEN = "8144738030:AAHDWFS8B68PBdbp7ljukTriy-QlA414tV4"
 
 bot = Client("media_downloader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 

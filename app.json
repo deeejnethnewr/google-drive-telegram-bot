@@ -1,0 +1,11 @@
+{
+  "name": "Google Drive Downloader Bot",
+  "description": "Telegram bot to download videos from Google Drive",
+  "repository": "https://github.com/YOUR_USERNAME/gdrive-downloader-bot",
+  "keywords": ["telegram","bot","google-drive"],
+  "env": {
+    "BOT_TOKEN": { "description": "BotFather Token", "required": true },
+    "API_ID":     { "description": "Telegram API ID", "required": true },
+    "API_HASH":   { "description": "Telegram API Hash", "required": true }
+  }
+}
